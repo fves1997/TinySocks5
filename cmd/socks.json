@@ -1,0 +1,7 @@
+{
+ "server": "123.206.174.245",
+ "server_port": 2355,
+ "local_port": 1081,
+ "password": "password",
+ "method": ""
+}
