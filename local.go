@@ -1,6 +1,7 @@
 package Socks5
 
 import (
+	"io"
 	"log"
 	"net"
 )
@@ -36,7 +37,6 @@ func (localSocks *LocalSocks) Listener() {
 		log.Fatal("本地监听创建失败...", err)
 	}
 	log.Println("开始接收连接...")
-
 	for {
 		tcpConn, err := listener.AcceptTCP()
 		if err != nil {
@@ -48,58 +48,24 @@ func (localSocks *LocalSocks) Listener() {
 }
 
 func (localSocks *LocalSocks) handleTcpConn(localConn *net.TCPConn) {
-	defer localConn.Close()
-	log.Println("接收到程序请求", localConn.RemoteAddr(), "==>", localConn.LocalAddr())
 	/* 连接代理服务器 */
 	proxyConn, err := net.DialTCP("tcp", nil, localSocks.ProxyAddress)
 	if err != nil {
-		log.Println("连接代理服务器", err)
+		localConn.Close()
+		log.Println(err)
 		log.Println("代理结束")
 		return
 	}
-	defer proxyConn.Close()
-	log.Println("开始转发数据")
-	isOver := make(chan bool)
-
 	go func() {
-		/* 将代理服务器的结果返回给应用 */
-		log.Println("程序<<==========代理服务器")
-		for {
-			if err = localSocks.transprotData(proxyConn, localConn); err != nil {
-				proxyConn.Close()
-				localConn.Close()
-				break
-			}
-		}
-		log.Println("程序<<==========代理服务器，传输完成")
-		isOver <- true
+		defer localConn.Close()
+		defer proxyConn.Close()
+		log.Printf("%s===>%s===>%s", localConn.RemoteAddr(), localConn.LocalAddr(), proxyConn.RemoteAddr())
+		_, _ = io.Copy(proxyConn, localConn)
 	}()
-
-	/* 将程序请求转发给代理服务器 */
-	log.Println("程序==========>>代理服务器")
-	for {
-		if err := localSocks.transprotData(localConn, proxyConn); err != nil {
-			proxyConn.Close()
-			localConn.Close()
-			break
-		}
-	}
-	log.Println("程序==========>>代理服务器，传输完成")
-	<-isOver
-	log.Println("代理结束")
-}
-
-func (localSocks *LocalSocks) transprotData(from *net.TCPConn, to *net.TCPConn) error {
-	for {
-		n, err := from.Read(byteBuffer)
-		if n > 0 {
-			_, err := to.Write(byteBuffer[:n])
-			if err != nil {
-				return err
-			}
-		}
-		if err != nil {
-			return err
-		}
-	}
+	go func() {
+		defer proxyConn.Close()
+		defer localConn.Close()
+		log.Printf("%s<===%s<===%s", localConn.RemoteAddr(), localConn.LocalAddr(), proxyConn.RemoteAddr())
+		_, _ = io.Copy(localConn, proxyConn)
+	}()
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"net/http"
+	_ "net/http/pprof"
 	. "socks5"
 	"strconv"
 )
@@ -12,5 +14,14 @@ func main() {
 	log.Println("[Server Port]:", config.ServerPort)
 	log.Println("[Local Port ]:", config.LocalPort)
 	localSocks := NewLocalSocks(":"+strconv.Itoa(config.LocalPort), config.Server+":"+strconv.Itoa(config.ServerPort))
+
+	// 内存分析
+	go func() {
+		serve := http.ListenAndServe(":8888", nil)
+		if serve != nil {
+			panic(serve)
+		}
+	}()
+
 	localSocks.Listener()
 }

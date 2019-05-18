@@ -1,12 +1,13 @@
 package Socks5
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"runtime"
+	"strconv"
 	"time"
 )
 
@@ -54,135 +55,133 @@ func (serverSocks *ServerSocks) Listener() {
 }
 
 func (serverSocks *ServerSocks) handleTcpConn(localConn *net.TCPConn) {
-	defer localConn.Close()
-	log.Println("本地接收到请求", localConn.RemoteAddr(), "=====>>", localConn.LocalAddr())
-
 	/* 解析Socks5协议 */
-	dstConn, err := serverSocks.resolveSocks5Protocol(localConn)
+	dstConn, err := serverSocks.handShack(localConn)
 	if err != nil {
+		log.Println(err)
+		localConn.Close()
 		log.Println("代理结束")
 		return
 	}
-	defer dstConn.Close()
-	log.Println("开始转发数据")
-
-	isOver := make(chan bool)
-
+	_ = dstConn.SetKeepAlive(true)
 	go func() {
-		/* 并将目标服务器的结果返回给代理服务器 */
-		log.Println("代理服务器<<==========目的服务器")
-		for {
-			if err = serverSocks.transprotData(dstConn, localConn); err != nil {
-				dstConn.Close()
-				localConn.Close()
-				break
-			}
-		}
-		log.Println("代理服务器==========>>目的服务器，传输完成")
-		isOver <- true
+		defer localConn.Close()
+		defer dstConn.Close()
+		log.Printf("%s===>%s===>%s\n", localConn.RemoteAddr(), localConn.LocalAddr(), dstConn.RemoteAddr())
+		_, _ = io.Copy(dstConn, localConn)
 	}()
 
-	log.Println("代理服务器==========>>目的服务器")
-	for {
-		/* 将代理服务器接收到的请求转发给目标服务器 */
-		if err := serverSocks.transprotData(localConn, dstConn); err != nil {
-			dstConn.Close()
-			localConn.Close()
-			break
-		}
-	}
-	log.Println("代理服务器==========>>目的服务器，传输完成")
-	<-isOver
-	log.Println("代理结束")
+	go func() {
+		defer localConn.Close()
+		defer dstConn.Close()
+		log.Printf("%s<===%s<===%s\n", localConn.RemoteAddr(), localConn.LocalAddr(), dstConn.RemoteAddr())
+		_, _ = io.Copy(localConn, dstConn)
+	}()
 }
 
-func (serverSocks *ServerSocks) resolveSocks5Protocol(localConn *net.TCPConn) (*net.TCPConn, error) {
+// https://zh.wikipedia.org/wiki/SOCKS
+// MaxAddrLen is the maximum size of SOCKS address in bytes.
+const MaxAddrLen = 1 + 1 + 255 + 2
+
+// 握手，获取与目的服务器的连接
+func (serverSocks *ServerSocks) handShack(rw io.ReadWriter) (*net.TCPConn, error) {
+	buff := make([]byte, MaxAddrLen)
 	/* 解析Socket5 协议 */
-	n, err := localConn.Read(byteBuffer)
-	if err != nil {
-		log.Println("==>从请求中读取数据失败", err)
+	// 读 ver 和 nmethods
+	if _, err := io.ReadFull(rw, buff[:2]); err != nil {
 		return nil, err
 	}
-	log.Println("==>接收到:", byteBuffer[:n])
-	// ver nmethods methods
-	if byteBuffer[0] != 0x05 {
-		log.Println("==>非Socks5协议")
+	// Version 0x05
+	if buff[0] != 0x05 {
+		return nil, errors.New("非Socks5协议")
+	}
+	nmethods := buff[1]
+	// 读 methods
+	if _, err := io.ReadFull(rw, buff[:nmethods]); err != nil {
+		return nil, err
+	}
+	// TODO 暂时只支持 不需要认证和用户名密码，两种方式
+
+	// 返回 []byte{0x05,0x00}
+	if _, err := rw.Write([]byte{0x05, 0x00}); err != nil {
+		return nil, err
+	}
+
+	// 读 ver，cmd，rsv
+	if _, err := io.ReadFull(rw, buff[:3]); err != nil {
+		return nil, err
+	}
+	if buff[0] != 0x05 {
 		return nil, errors.New("非Socks5协议")
 	}
 
-	// 默认采用 不认证的方式 TODO
-	// 响应客户端 []byte{0x05,0x00}
-	_, err = localConn.Write([]byte{0x05, 0x00})
-	if err != nil {
-		log.Println("<==返回数据发送错误", err)
-		return nil, err
-	}
-	log.Println("<==返回数据:", []byte{0x05, 0x02})
-
-	n, err = localConn.Read(byteBuffer)
-	if err != nil {
-		log.Println("==>从请求中读取数据失败", err)
-		return nil, err
-	}
-	log.Println("==>接收到:", byteBuffer[:n])
-	atyp := byteBuffer[3]
-	var desIp []byte // 目的IP
-	switch atyp {
-	case 0x01: // IPv4
-		desIp = byteBuffer[4 : 4+net.IPv4len]
-	case 0x03: // Domainname
-		// 第4个字节是域名长度
-		domainname := string(byteBuffer[5 : 5+byteBuffer[4]])
-		log.Println("解析IP:", domainname)
-		addr, err := net.ResolveIPAddr("ip", domainname)
+	cmd := buff[1]
+	switch cmd {
+	case 0x01: // CONNECT 请求
+		host, err := readIPAndPortToHost(rw, buff)
 		if err != nil {
-			log.Println("解析IP出错:", err)
 			return nil, err
 		}
-		desIp = addr.IP.To4()
-	case 0x04: // IPv6
-		desIp = byteBuffer[4 : 4+net.IPv6len]
-	default: // 未定义
-		return nil, errors.New("未定义的协议")
+		conn, err := net.Dial("tcp", host)
+		if err != nil {
+			// 如果连接目标服务器失败，则server直接断开连接
+			return nil, err
+		}
+		if _, err := rw.Write([]byte{0x5, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
+		return conn.(*net.TCPConn), nil
+	case 0x02: // BIND请求
+		// TODO 暂不支持
+		return nil, errors.New("命令码不支持")
+	case 0x03: // UDP转发
+		// TODO 暂不支持
+		return nil, errors.New("命令码不支持")
+	default:
+		return nil, errors.New("命令码不支持")
 	}
-	log.Println("目的IP:", desIp)
-	desPort := byteBuffer[n-2:] // 目的端口
-	log.Println("目的Port:", binary.BigEndian.Uint16(desPort))
-
-	desAddr := &net.TCPAddr{
-		IP:   desIp,
-		Port: int(binary.BigEndian.Uint16(desPort)),
-	}
-
-	/* 连接 目的服务器  */
-	dstConn, err := net.DialTCP("tcp", nil, desAddr)
-	if err != nil {
-		log.Println("连接目的服务器失败,", err)
-		// TODO
-		return nil, err
-	}
-
-	log.Println("连接目的服务器成功")
-	n, err = localConn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
-	if err != nil {
-		log.Println("<==返回数据发生错误", err)
-		return nil, err
-	}
-	log.Println("<==返回数据:", []byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
-	return dstConn, nil
 }
 
-func (serverSocks *ServerSocks) transprotData(from *net.TCPConn, to *net.TCPConn) error {
-	for {
-		n, err := from.Read(byteBuffer)
-		if n > 0 {
-			_, err := to.Write(byteBuffer[:n])
-			if err != nil {
-				return err
-			}
+// 读取IP和Port 并转换成Host IP:Port
+func readIPAndPortToHost(r io.Reader, buff []byte) (string, error) {
+	if len(buff) < MaxAddrLen {
+		return "", errors.New("buff太小")
+	}
+	// read atype
+	if _, err := io.ReadFull(r, buff[:1]); err != nil {
+		return "", err
+	}
+	atyp := buff[0] // addr 类型
+	switch atyp {
+	case 0x01: // IPv4
+		// 读 IPv4 和 Port
+		if _, err := io.ReadFull(r, buff[:6]); err != nil {
+			return "", err
 		}
-		if err != nil {
-			return err
+		ip := net.IP(buff[:4]).String()
+		port := int(uint16(buff[net.IPv4len])<<8 | uint16(buff[net.IPv4len+1]))
+		return net.JoinHostPort(ip, strconv.Itoa(port)), nil
+	case 0x03: // Domain
+		// 读取域名的长度
+		if _, err := io.ReadFull(r, buff[:1]); err != nil {
+			return "", err
 		}
+		length := buff[0]
+		if _, err := io.ReadFull(r, buff[:length+2]); err != nil {
+			return "", err
+		}
+		ip := string(buff[:length])
+		port := int(uint16(buff[length])<<8 | uint16(buff[length+1]))
+		return net.JoinHostPort(ip, strconv.Itoa(port)), nil
+	case 0x04: // IPv6
+		if _, err := io.ReadFull(r, buff[:18]); err != nil {
+			return "", err
+		}
+		ip := net.IP(buff[:16]).String()
+		port := int(uint16(buff[net.IPv6len])<<8 | uint16(buff[net.IPv6len+1]))
+		return net.JoinHostPort(ip, strconv.Itoa(port)), nil
+	default:
+		return "", errors.New("不支持的地址类型")
 	}
 }
