@@ -15,3 +15,8 @@ go run cmd/server.go
 client
 go run cmd/local.go
 ```
+# TODO 
+1. Redsocks  
+重定向tcp连接到socks5代理，实现socks5透明代理
+详情:[redsocks](https://github.com/darkk/redsocks)
+2. 

@@ -6,9 +6,7 @@ import (
 	"io"
 	"log"
 	"net"
-	"runtime"
 	"strconv"
-	"time"
 )
 
 type ServerSocks struct {
@@ -19,8 +17,6 @@ func init() {
 	log.SetPrefix("[Server]")
 	log.SetFlags(log.LstdFlags | log.Llongfile)
 }
-
-var byteBuffer = make([]byte, 4096)
 
 func NewServerSocks(localHost string) *ServerSocks {
 	tcpAddr, err := net.ResolveTCPAddr("tcp", localHost)
@@ -38,12 +34,6 @@ func (serverSocks *ServerSocks) Listener() {
 		log.Fatal("本地监听开启失败", err)
 	}
 	log.Println("开始接收连接...")
-	go func() {
-		for {
-			runtime.Gosched()
-			time.Sleep(1 * time.Second)
-		}
-	}()
 	for {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
@@ -91,8 +81,8 @@ func (serverSocks *ServerSocks) handShack(rw io.ReadWriter) (*net.TCPConn, error
 	if _, err := io.ReadFull(rw, buff[:2]); err != nil {
 		return nil, err
 	}
-	// Version 0x05
-	if buff[0] != 0x05 {
+	// Socks Version
+	if buff[0] != SOCKS_VERSION {
 		return nil, errors.New("非Socks5协议")
 	}
 	nmethods := buff[1]
@@ -101,7 +91,6 @@ func (serverSocks *ServerSocks) handShack(rw io.ReadWriter) (*net.TCPConn, error
 		return nil, err
 	}
 	// TODO 暂时只支持 不需要认证和用户名密码，两种方式
-
 	// 返回 []byte{0x05,0x00}
 	if _, err := rw.Write([]byte{0x05, 0x00}); err != nil {
 		return nil, err
@@ -111,13 +100,14 @@ func (serverSocks *ServerSocks) handShack(rw io.ReadWriter) (*net.TCPConn, error
 	if _, err := io.ReadFull(rw, buff[:3]); err != nil {
 		return nil, err
 	}
-	if buff[0] != 0x05 {
+
+	if buff[0] != SOCKS_VERSION {
 		return nil, errors.New("非Socks5协议")
 	}
 
 	cmd := buff[1]
 	switch cmd {
-	case 0x01: // CONNECT 请求
+	case CMD_CONNECT: // CONNECT 请求
 		host, err := readIPAndPortToHost(rw, buff)
 		if err != nil {
 			return nil, err
@@ -132,14 +122,14 @@ func (serverSocks *ServerSocks) handShack(rw io.ReadWriter) (*net.TCPConn, error
 			return nil, err
 		}
 		return conn.(*net.TCPConn), nil
-	case 0x02: // BIND请求
+	case CMD_BIND: // BIND请求
 		// TODO 暂不支持
-		return nil, errors.New("命令码不支持")
-	case 0x03: // UDP转发
+		return nil, errors.New("not support")
+	case CMD_UDP: // UDP转发
 		// TODO 暂不支持
-		return nil, errors.New("命令码不支持")
+		return nil, errors.New("not support")
 	default:
-		return nil, errors.New("命令码不支持")
+		return nil, errors.New("not support")
 	}
 }
 
@@ -154,7 +144,7 @@ func readIPAndPortToHost(r io.Reader, buff []byte) (string, error) {
 	}
 	atyp := buff[0] // addr 类型
 	switch atyp {
-	case 0x01: // IPv4
+	case ATYPE_IPV4: // IPv4
 		// 读 IPv4 和 Port
 		if _, err := io.ReadFull(r, buff[:6]); err != nil {
 			return "", err
@@ -162,7 +152,7 @@ func readIPAndPortToHost(r io.Reader, buff []byte) (string, error) {
 		ip := net.IP(buff[:4]).String()
 		port := int(uint16(buff[net.IPv4len])<<8 | uint16(buff[net.IPv4len+1]))
 		return net.JoinHostPort(ip, strconv.Itoa(port)), nil
-	case 0x03: // Domain
+	case ATYPE_DOMAIN: // Domain
 		// 读取域名的长度
 		if _, err := io.ReadFull(r, buff[:1]); err != nil {
 			return "", err
@@ -174,7 +164,7 @@ func readIPAndPortToHost(r io.Reader, buff []byte) (string, error) {
 		ip := string(buff[:length])
 		port := int(uint16(buff[length])<<8 | uint16(buff[length+1]))
 		return net.JoinHostPort(ip, strconv.Itoa(port)), nil
-	case 0x04: // IPv6
+	case ATYPE_IPV6: // IPv6
 		if _, err := io.ReadFull(r, buff[:18]); err != nil {
 			return "", err
 		}
