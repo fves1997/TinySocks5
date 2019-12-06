@@ -1,20 +1,24 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
+	"os/signal"
 	. "socks5"
-	"strconv"
 )
 
 func main() {
-	var config = NewSocksConfig()
-	log.Println("[Server IP  ]:", config.Server)
-	log.Println("[Server Port]:", config.ServerPort)
-	log.Println("[Local Port ]:", config.LocalPort)
-	serverSocks := NewServerSocks(":" + strconv.Itoa(config.ServerPort))
 
+	sign := make(chan os.Signal)
+	signal.Notify(sign, os.Interrupt)
+	signal.Notify(sign, os.Kill)
+	var config = NewSocksConfig()
+	log.Printf("[Server] %s:%d\n", config.Host, config.Port)
+	serverSocks := NewServerSocks()
+	serverSocks.Listener(fmt.Sprintf("%s:%d", config.Host, config.Port))
 	// 内存分析
 	go func() {
 		serve := http.ListenAndServe(":8888", nil)
@@ -23,5 +27,5 @@ func main() {
 		}
 	}()
 
-	serverSocks.Listener()
+	<-sign
 }

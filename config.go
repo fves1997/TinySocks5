@@ -8,11 +8,8 @@ import (
 )
 
 type Config struct {
-	Server     string `json:"server"`
-	ServerPort int    `json:"server_port"`
-	LocalPort  int    `json:"local_port"`
-	Password   string `json:"password"`
-	Method     string `json:"method"`
+	Host string `json:"host"`
+	Port int    `json:"port"`
 }
 
 const configName = "socks.json"
@@ -25,31 +22,29 @@ func NewSocksConfig() *Config {
 
 func (config *Config) saveDefaultConfig() {
 	/* 默认配置 */
-	config.Server = "127.0.0.1"
-	config.ServerPort = 2355
-	config.LocalPort = 1081
-	config.Password = "password"
+	config.Host = "0.0.0.0"
+	config.Port = 2355
 
 	bytes, _ := json.MarshalIndent(config, "", " ")
 	err := ioutil.WriteFile(configName, bytes, 0666)
 	if err != nil {
-		log.Fatal("写入配置文件失败", err)
+		log.Fatalf("Write Config Error: %s\n", err.Error())
 	}
 }
 
 func (config *Config) loadConfig() {
 	_, err := os.Stat(configName)
 	if os.IsNotExist(err) {
-		log.Println("配置文件不存在，生成默认配置文件")
+		log.Println("Config isn't exist,Initialize the default configuration")
 		config.saveDefaultConfig()
 		return
 	}
 	bytes, err := ioutil.ReadFile(configName)
 	if err != nil {
-		log.Fatal("读取配置文件失败", err)
+		log.Fatalf("Read Config Error: %s\n", err.Error())
 	}
 	err = json.Unmarshal(bytes, config)
 	if err != nil {
-		log.Fatal("配置文件不是合格的JSON格式", err)
+		log.Fatalf("Unmarshal config Error: %s\n", err.Error())
 	}
 }
